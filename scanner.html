@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scanner Absensi</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; color: #111827; }
+  .wrap { max-width: 360px; margin: 0 auto; padding: 16px; }
+  .card { background: #fff; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,.08); overflow: hidden; }
+  .head { background: #111827; color: #fff; text-align: center; padding: 14px; font-weight: 700; }
+  .body { padding: 16px; }
+  #reader { width: 100%; aspect-ratio: 1; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  button { flex: 1; border: 0; border-radius: 8px; padding: 10px; font-weight: 700; font-size: 12px; cursor: pointer; }
+  .b1 { background: #dbeafe; color: #1d4ed8; } .b2 { background: #f3e8ff; color: #7e22ce; }
+  .b3 { background: #e0e7ff; color: #4338ca; }
+  input { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; font-size: 13px; margin-bottom: 8px; }
+  #result { margin-top: 12px; text-align: center; font-size: 13px; }
+  .ok-datang { background: #f0fdf4; color: #14532d; border: 1px solid #bbf7d0; }
+  .ok-pulang { background: #eff6ff; color: #1e3a8a; border: 1px solid #bfdbfe; }
+  .err { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .info { background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; }
+  .box { padding: 14px; border-radius: 12px; font-weight: 700; }
+  .big { font-size: 28px; font-family: ui-monospace, monospace; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="head">Scanner Absensi</div>
+    <div class="body">
+      <div id="reader"></div>
+      <div class="row">
+        <button class="b1" onclick="startCamera('environment')">Belakang</button>
+        <button class="b2" onclick="startCamera('user')">Depan</button>
+      </div>
+      <input id="manualNisn" placeholder="Atau ketik NISN lalu Enter" inputmode="numeric">
+      <button class="b3" style="width:100%" onclick="submitManual()">Absen via NISN</button>
+      <label class="b2" style="display:block;text-align:center;border-radius:8px;padding:10px;font-weight:700;font-size:12px;cursor:pointer;margin-top:8px">
+        Scan dari Foto (jika kamera live gagal)
+        <input type="file" accept="image/*" capture="environment" style="display:none" onchange="scanFromFile(this)">
+      </label>
+      <div id="reader-file" style="display:none"></div>
+      <div id="result"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ISI dengan URL web app Apps Script (yang berakhiran /exec)
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbztRDRqkwvmI8Ye6zIahlqFQsvq0w6I12-DXlLpCYnCCvf-q4FxUhfW2CBGqECFg2qG/exec';
+
+  // Token dibawa dari aplikasi lewat #hash, lalu disimpan dan dihapus dari address bar
+  let token = null;
+  try {
+    const fromHash = decodeURIComponent(location.hash.replace(/^#/, ''));
+    if (fromHash) {
+      sessionStorage.setItem('absensiToken', fromHash);
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    token = sessionStorage.getItem('absensiToken');
+  } catch (e) { token = decodeURIComponent(location.hash.replace(/^#/, '')) || null; }
+
+  let qr = null;
+  let busy = false;
+  const resultEl = document.getElementById('result');
+
+  function show(cls, nodes) {
+    resultEl.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'box ' + cls;
+    nodes.forEach(n => box.appendChild(typeof n === 'string' ? document.createTextNode(n) : n));
+    resultEl.appendChild(box);
+  }
+  function line(text, cls) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    if (cls) d.className = cls;
+    return d;
+  }
+
+  async function kirim(nisn) {
+    if (!nisn || busy) return;
+    if (!APPS_SCRIPT_URL) return show('err', ['APPS_SCRIPT_URL belum diisi di scanner.html.']);
+    if (!token) return show('err', ['Token tidak ada. Buka scanner ini dari tombol di aplikasi absensi.']);
+    busy = true;
+    show('info', ['Memproses data...']);
+    let delay = 3000;
+    try {
+      // Tanpa header Content-Type khusus -> tidak memicu preflight CORS
+      const res = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify({ token: token, nisn: String(nisn).trim() })
+      });
+      const r = await res.json();
+      if (r.success) {
+        const jam = r.type === 'datang' ? r.jamDatang : r.jamPulang;
+        show(r.type === 'datang' ? 'ok-datang' : 'ok-pulang',
+          [line(r.nama || 'Siswa'), line(r.kelas || ''), line(r.message), line(jam, 'big')]);
+      } else {
+        show('err', [line('Gagal!'), line(r.message || 'Terjadi kesalahan.')]);
+        delay = 4000;
+      }
+    } catch (e) {
+      show('err', [line('Gagal terhubung ke server.'), line('Pastikan deployment Apps Script "Anyone" dan URL benar.')]);
+    }
+    setTimeout(() => { busy = false; }, delay);
+  }
+
+  function submitManual() {
+    const el = document.getElementById('manualNisn');
+    const v = el.value.trim();
+    el.value = '';
+    kirim(v);
+    el.focus();
+  }
+  document.getElementById('manualNisn').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitManual();
+  });
+
+  function camError(err) {
+    const name = (err && err.name) || '';
+    let msg = String(err);
+    if (name === 'NotAllowedError' || /permission/i.test(msg)) msg = 'Izin kamera ditolak. Klik ikon gembok di address bar, izinkan Kamera, lalu muat ulang. Atau pakai "Scan dari Foto" / ketik NISN.';
+    else if (name === 'NotFoundError' || /no camera|not found/i.test(msg)) msg = 'Kamera tidak ditemukan di perangkat ini. Pakai "Scan dari Foto", ketik NISN, atau scanner barcode USB.';
+    else if (name === 'NotReadableError') msg = 'Kamera sedang dipakai aplikasi/tab lain. Tutup lalu coba lagi.';
+    show('err', [msg]);
+  }
+
+  async function startCamera(mode) {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      return show('err', ['Browser ini tidak mendukung kamera langsung (atau bukan HTTPS / dibuka dari dalam aplikasi seperti WhatsApp). Buka di Chrome/Safari, atau pakai "Scan dari Foto".']);
+    }
+    const cfg = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 };
+    try {
+      if (qr) { try { await qr.stop(); qr.clear(); } catch (e) {} }
+      qr = new Html5Qrcode('reader');
+      try {
+        await qr.start({ facingMode: mode }, cfg, text => kirim(text), () => {});
+      } catch (first) {
+        // Fallback: pakai daftar kamera (laptop tanpa kamera belakang, dsb.)
+        const cams = await Html5Qrcode.getCameras();
+        if (!cams || !cams.length) throw first;
+        const pick = (mode === 'environment'
+          ? cams.find(c => /back|rear|belakang|environment/i.test(c.label))
+          : cams.find(c => /front|user|depan/i.test(c.label))) || cams[cams.length - 1];
+        await qr.start(pick.id, cfg, text => kirim(text), () => {});
+      }
+      resultEl.innerHTML = '';
+    } catch (err) { camError(err); }
+  }
+
+  function scanFromFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+    new Html5Qrcode('reader-file').scanFile(file, false)
+      .then(text => kirim(text))
+      .catch(() => show('err', ['QR tidak terbaca. Foto lebih dekat, terang, dan tidak buram.']));
+    input.value = '';
+  }
+
+  startCamera('environment');
+</script>
+</body>
+</html>
